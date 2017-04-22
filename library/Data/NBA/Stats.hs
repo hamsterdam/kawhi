@@ -19,6 +19,7 @@ module Data.NBA.Stats (
     -- * Simple API
     getSplitRows,
     getSplitRow,
+    splitRows,
 
     -- * Generic API
     getSplitRowsGeneric,
@@ -65,6 +66,19 @@ getSplitRows ::
     -> IO (Either StatsError [a]) -- ^ The return value: an IO action resulting in an error or split rows.
 getSplitRows path splitName params = Except.runExceptT $ getSplitRowsGeneric path splitName params
 
+splitRows ::
+    (Aeson.FromJSON a)
+    => ResponseBody -- ^ The JSON string containing the splits
+    -> SplitName -- ^ The split name.
+    -> Either StatsError [a] -- ^ The return value: an error or split rows.
+splitRows string splitName =
+  either
+    Left
+    parseSplit
+    (findSplit string splitName)
+  where
+    parseSplit x = traverse (parseSplitRow $ columns x) $ rows x
+
 {- |
     Gets a row in a NBA Stats split.
 
@@ -93,7 +107,10 @@ getSplitRowsGeneric ::
     -> m [a] -- ^ The return value: an action resulting in an error or split rows.
 getSplitRowsGeneric path splitName params = do
     response <- get path params
-    split <- findSplit response splitName
+    split <- either
+        Except.throwError
+        return
+        (findSplit (HTTP.responseBody response) splitName)
     traverse (parseSplitRow $ columns split) $ rows split
 
 {- |
@@ -111,7 +128,10 @@ getSplitRowGeneric ::
     -> m a -- ^ The return value: an action resulting in an error or a split row.
 getSplitRowGeneric path splitName key value params = do
     response <- get path params
-    split <- findSplit response splitName
+    split <- either
+        Except.throwError
+        return
+        (findSplit (HTTP.responseBody response) splitName)
     keyIndex <- maybe
         (Except.throwError $ SplitColumnNameNotFound $ Text.unpack key)
         return
@@ -157,6 +177,9 @@ instance Aeson.ToJSON Split where
         "name" .= name,
         "headers" .= columns,
         "rowSet" .= rows]
+
+-- | A JSON response string
+type ResponseBody = LBS.ByteString
 
 -- | An NBA Stats split name.
 type SplitName = Text.Text
@@ -235,12 +258,12 @@ parseSplitRow columns row =
             Aeson.Success split -> return split
         else Except.throwError $ SplitRowCardinalityInconsistent $ show row
 
-findSplit :: (Except.MonadError StatsError m) => HTTP.Response LBS.ByteString -> SplitName -> m Split
-findSplit response splitName = do
+findSplit :: LBS.ByteString -> SplitName -> Either StatsError Split
+findSplit string splitName = do
     stats <- either
         (Except.throwError . StatsResponseDecodeFailure)
         return
-        (Aeson.eitherDecode . HTTP.responseBody $ response)
+        (Aeson.eitherDecode string)
     maybe
         (Except.throwError $ SplitNameNotFound $ Text.unpack splitName)
         return
